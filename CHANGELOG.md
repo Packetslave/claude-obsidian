@@ -5,7 +5,10 @@ Notable changes to claude-obsidian are recorded here using
 [Semantic Versioning](https://semver.org/). Git history retains the detailed
 implementation record for older releases.
 
-## [Unreleased]
+## [2.1.1] - 2026-08-24
+
+Gitignore-aware lint link resolution, and Windows/WSL troubleshooting
+documentation.
 
 ### Added
 
