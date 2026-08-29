@@ -69,6 +69,28 @@ present. Only `ingest` and `autoresearch` own non-empty managed requests;
 `setup` and `migration` may initialize the managed files directly. Other
 operation types cannot target them.
 
+## Write modes
+
+`mode` is one of `create`, `replace`, `append`, or `prepend`.
+
+`create` requires the target to be absent; the other three require it to
+exist. For `append` and `prepend` the write's `content`/`content_file` is a
+**fragment**, not the whole document: the engine reads the current bytes under
+the same `expected_hashes` precondition and composes `base + fragment`
+(`append`) or `fragment + base` (`prepend`). A declared `sha256` still
+describes the authored fragment, exactly as it describes the authored bytes for
+the other modes, while the journal and result hashes describe the composed
+file that lands on disk.
+
+Prefer `append`/`prepend` for growing documents — a log entry or a line added
+to a hot list costs authoring a paragraph instead of re-emitting the whole
+file. Safety is unchanged: a stale base fails with `EXPECTED_HASH_MISMATCH`
+just as `replace` does, a missing target fails with `APPEND_TARGET_MISSING` or
+`PREPEND_TARGET_MISSING`, the Markdown and JSON validators judge the **composed**
+document, and rollback restores the original bytes from the same backup. JSON
+targets are therefore effectively replace-only, since concatenating onto a JSON
+document does not produce valid JSON.
+
 Operation types are enforced authorities, not labels: `base` writes only
 `wiki/**/*.base`; `canvas` writes canvases under `wiki/canvases/` and its
 optional `index.md`; `fold` writes exactly one `wiki/folds/*.md` page plus

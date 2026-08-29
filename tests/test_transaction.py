@@ -2533,6 +2533,173 @@ def test_ten_concurrent_address_transactions_remain_consistent() -> None:
             assert f"address: {address}" in page
 
 
+def test_append_and_prepend_compose_onto_the_existing_bytes() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        vault = make_vault(Path(td) / "vault")
+        target = vault / "wiki/log.md"
+        target.write_text("# Log\n\nfirst\n", encoding="utf-8")
+
+        appended = apply_bundle(
+            vault,
+            bundle(
+                "append-entry",
+                [{"path": "wiki/log.md", "mode": "append", "content": "\nsecond\n"}],
+                {"wiki/log.md": sha256_file(target)},
+            ),
+        )
+        assert target.read_text(encoding="utf-8") == "# Log\n\nfirst\n\nsecond\n"
+        # The recorded hash describes the composed file, not the fragment.
+        assert appended["hashes"]["wiki/log.md"] == sha256_file(target)
+
+        apply_bundle(
+            vault,
+            bundle(
+                "prepend-entry",
+                [{"path": "wiki/log.md", "mode": "prepend", "content": "newest\n"}],
+                {"wiki/log.md": sha256_file(target)},
+            ),
+        )
+        assert (
+            target.read_text(encoding="utf-8") == "newest\n# Log\n\nfirst\n\nsecond\n"
+        )
+
+
+def test_append_requires_an_existing_target() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        vault = make_vault(Path(td) / "vault")
+        try:
+            apply_bundle(
+                vault,
+                bundle(
+                    "append-missing",
+                    [{"path": "wiki/A.md", "mode": "append", "content": "tail\n"}],
+                ),
+            )
+        except TransactionConflict as exc:
+            assert exc.code == "APPEND_TARGET_MISSING"
+        else:
+            raise AssertionError("appending to a missing file must fail")
+        assert not (vault / "wiki/A.md").exists()
+
+
+def test_append_rejects_a_stale_base_exactly_as_replace_does() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        vault = make_vault(Path(td) / "vault")
+        target = vault / "wiki/log.md"
+        target.write_text("current\n", encoding="utf-8")
+        try:
+            apply_bundle(
+                vault,
+                bundle(
+                    "append-stale",
+                    [{"path": "wiki/log.md", "mode": "append", "content": "tail\n"}],
+                    {"wiki/log.md": "0" * 64},
+                ),
+            )
+        except TransactionConflict as exc:
+            assert exc.code == "EXPECTED_HASH_MISMATCH"
+        else:
+            raise AssertionError("a stale append base must fail")
+        assert target.read_text(encoding="utf-8") == "current\n"
+
+
+def test_append_rolls_back_to_the_original_bytes() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        vault = make_vault(Path(td) / "vault")
+        target = vault / "wiki/log.md"
+        target.write_text("original\n", encoding="utf-8")
+        before = sha256_file(target)
+        try:
+            apply_bundle(
+                vault,
+                bundle(
+                    "append-rollback",
+                    [
+                        {
+                            "path": "wiki/log.md",
+                            "mode": "append",
+                            "content": "tail\n",
+                        },
+                        {"path": "wiki/B.md", "mode": "create", "content": "# B\n"},
+                    ],
+                    {"wiki/log.md": before},
+                ),
+                fail_after=2,
+            )
+        except RuntimeError as exc:
+            assert "injected failure" in str(exc)
+        else:
+            raise AssertionError("failure injection must raise")
+        assert sha256_file(target) == before
+        assert target.read_text(encoding="utf-8") == "original\n"
+        assert not (vault / "wiki/B.md").exists()
+        journal = json.loads(
+            (vault / ".vault-meta/transactions/append-rollback/journal.json").read_text()
+        )
+        assert journal["state"] == "rolled-back"
+
+
+def test_append_declared_hash_describes_the_authored_fragment() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        vault = make_vault(Path(td) / "vault")
+        target = vault / "wiki/log.md"
+        target.write_text("head\n", encoding="utf-8")
+        fragment = "tail\n"
+        apply_bundle(
+            vault,
+            bundle(
+                "append-declared-hash",
+                [
+                    {
+                        "path": "wiki/log.md",
+                        "mode": "append",
+                        "content": fragment,
+                        "sha256": hashlib.sha256(fragment.encode("utf-8")).hexdigest(),
+                    }
+                ],
+                {"wiki/log.md": sha256_file(target)},
+            ),
+        )
+        assert target.read_text(encoding="utf-8") == "head\ntail\n"
+
+
+def test_append_validates_the_composed_document_not_the_fragment() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        vault = make_vault(Path(td) / "vault")
+        target = vault / "wiki/log.md"
+        # A fragment that is not a standalone document still composes cleanly
+        # onto a page whose frontmatter is already terminated.
+        target.write_text("---\ntitle: Log\n---\n\nfirst\n", encoding="utf-8")
+        apply_bundle(
+            vault,
+            bundle(
+                "append-fragment",
+                [{"path": "wiki/log.md", "mode": "append", "content": "second\n"}],
+                {"wiki/log.md": sha256_file(target)},
+            ),
+        )
+        assert target.read_text(encoding="utf-8").endswith("first\nsecond\n")
+
+        # Prepending unterminated frontmatter must be rejected on the composed
+        # bytes, which is where the document actually becomes invalid.
+        broken = vault / "wiki/B.md"
+        broken.write_text("body\n", encoding="utf-8")
+        try:
+            apply_bundle(
+                vault,
+                bundle(
+                    "prepend-broken",
+                    [{"path": "wiki/B.md", "mode": "prepend", "content": "---\nx: 1\n"}],
+                    {"wiki/B.md": sha256_file(broken)},
+                ),
+            )
+        except TransactionValidationError as exc:
+            assert exc.code == "INVALID_MARKDOWN"
+        else:
+            raise AssertionError("an unterminated composed frontmatter must fail")
+        assert broken.read_text(encoding="utf-8") == "body\n"
+
+
 def main() -> None:
     multiprocessing.set_start_method("fork" if os.name != "nt" else "spawn", force=True)
     test_apply_and_idempotent_result()
@@ -2587,6 +2754,12 @@ def main() -> None:
     test_complete_result_reconstruction_rejects_existing_portable_alias()
     test_recovery_always_correlates_and_validates_existing_results()
     test_ten_concurrent_address_transactions_remain_consistent()
+    test_append_and_prepend_compose_onto_the_existing_bytes()
+    test_append_requires_an_existing_target()
+    test_append_rejects_a_stale_base_exactly_as_replace_does()
+    test_append_rolls_back_to_the_original_bytes()
+    test_append_declared_hash_describes_the_authored_fragment()
+    test_append_validates_the_composed_document_not_the_fragment()
     print("All transaction tests passed.")
 
 

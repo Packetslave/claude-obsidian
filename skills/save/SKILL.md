@@ -65,7 +65,7 @@ Draft all changes before touching vault state. A complete Save normally couples:
 
 - the selected note;
 - `wiki/index.md` or the active methodology index;
-- one new top-of-file entry in `wiki/log.md`;
+- one new top-of-file entry in `wiki/log.md`, written as a `prepend`;
 - a refreshed `wiki/hot.md` under 500 words;
 - source or claim ledger updates only when evidence changed.
 
@@ -73,7 +73,18 @@ Every canonical page create or removal must update at least one active index or
 MOC in this bundle. Update `wiki/index.md` only when it is that active catalog.
 
 Record SHA-256 preconditions for every target. Use `create` for a new note and
-`replace` only for a reviewed update. Parallel agents may inspect and draft but
+`replace` only for a reviewed update.
+
+Do not re-emit a growing document to add to it. `wiki/log.md` takes the new
+entry as a `prepend` whose content is just that entry, so a save costs
+authoring a paragraph rather than the whole log; an index or MOC that only
+gains a line takes an `append` of that line. Reserve `replace` for documents
+you are genuinely rewriting — `wiki/hot.md` is one, because keeping it under
+500 words means re-curating it rather than growing it. Composition happens
+inside the engine under the same SHA-256 precondition, so a stale base is
+rejected rather than silently duplicated.
+
+Parallel agents may inspect and draft but
 must not mutate the vault. The orchestrator creates one
 `claude-obsidian.transaction.v1` bundle with `operation_type: save`.
 
@@ -89,7 +100,7 @@ python3 "$CORE" transaction apply /path/to/save-bundle.json --vault /path/to/vau
   --approved-plan-sha256 "$APPROVAL_SHA256"
 ```
 
-Show the note title, destination, create/replace modes, and changed paths after
+Show the note title, destination, write modes, and changed paths after
 inspection. Apply only the reviewed scope. Report the resulting operation ID and
 paths.
 

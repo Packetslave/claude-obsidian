@@ -3381,9 +3381,10 @@ def _prepare_writes(
                 f"every write requires an expected_hashes entry: {normalized}",
             )
         mode = raw.get("mode")
-        if mode not in {"create", "replace"}:
+        if mode not in {"create", "replace", "append", "prepend"}:
             raise TransactionValidationError(
-                "INVALID_WRITE_MODE", f"{relative} mode must be create or replace"
+                "INVALID_WRITE_MODE",
+                f"{relative} mode must be create, replace, append, or prepend",
             )
         _validate_operation_write_scope(
             str(bundle.get("operation_type")),
@@ -3399,6 +3400,8 @@ def _prepare_writes(
                 "RAW_IS_CREATE_ONLY",
                 f"raw source payloads cannot be replaced: {relative}",
             )
+        # For append/prepend this is the authored fragment, not the whole file;
+        # the composed document is assembled once the base has been read below.
         content = _raw_write_bytes(raw, bundle_dir)
         total_content_bytes += len(content)
         if total_content_bytes > MAX_TRANSACTION_TOTAL_BYTES:
@@ -3428,8 +3431,9 @@ def _prepare_writes(
                 "CONTENT_HASH_MISMATCH",
                 f"declared hash does not match content for {relative}",
             )
-        _validate_json(content, normalized)
-        _validate_markdown(content, normalized)
+        if mode in {"create", "replace"}:
+            _validate_json(content, normalized)
+            _validate_markdown(content, normalized)
         current_hash, original_mode = _safe_file_state(
             vault_root,
             normalized,
@@ -3450,7 +3454,13 @@ def _prepare_writes(
             raise TransactionConflict(
                 "REPLACE_TARGET_MISSING", f"replace target is missing: {normalized}"
             )
+        if mode in {"append", "prepend"} and current_hash is None:
+            raise TransactionConflict(
+                f"{mode.upper()}_TARGET_MISSING",
+                f"{mode} target is missing: {normalized}",
+            )
         backup = backup_dir / f"{index:04d}.original"
+        original_content: bytes | None = None
         if current_hash is not None:
             original_content = read_vault_regular(
                 vault_root,
@@ -3478,6 +3488,25 @@ def _prepare_writes(
                 _atomic_runtime_write_at(
                     backups_fd, backup.name, original_content, mode=0o600
                 )
+        if mode in {"append", "prepend"}:
+            # current_hash is not None here, so the base was read for the backup.
+            assert original_content is not None
+            content = (
+                original_content + content
+                if mode == "append"
+                else content + original_content
+            )
+            content_hash = sha256_bytes(content)
+            total_content_bytes += len(original_content)
+            if total_content_bytes > MAX_TRANSACTION_TOTAL_BYTES:
+                raise TransactionValidationError(
+                    "TRANSACTION_TOTAL_TOO_LARGE",
+                    f"transaction content exceeds {MAX_TRANSACTION_TOTAL_BYTES} bytes",
+                )
+            # The composed document is what lands on disk, so it is what the
+            # document validators must judge — a fragment is not a document.
+            _validate_json(content, normalized)
+            _validate_markdown(content, normalized)
         prepared.append(
             PreparedWrite(
                 relative_path=normalized,
@@ -3787,7 +3816,7 @@ def _validated_recovery_writes(
                 f"journal write {index} has an invalid backup binding",
             )
         mode = entry.get("mode")
-        if mode not in {"create", "replace"}:
+        if mode not in {"create", "replace", "append", "prepend"}:
             raise TransactionRecoveryError(
                 "CORRUPT_JOURNAL", f"journal write {index} has an invalid mode"
             )
