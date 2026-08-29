@@ -3106,6 +3106,25 @@ def _validate_markdown(data: bytes, relative_path: str) -> None:
         )
 
 
+def _split_markdown_frontmatter(data: bytes, relative_path: str) -> tuple[bytes, bytes]:
+    """Split a Markdown document into its frontmatter header and its body.
+
+    Mirrors the terminator rule _validate_markdown enforces, so a block this
+    accepts is exactly one that validation considers well formed. Returns an
+    empty header for non-Markdown paths and for documents without frontmatter.
+    """
+
+    if not relative_path.lower().endswith(".md"):
+        return b"", data
+    if not data.startswith(b"---\n"):
+        return b"", data
+    terminator = data.find(b"\n---\n", 4)
+    if terminator == -1:
+        return b"", data
+    boundary = terminator + len(b"\n---\n")
+    return data[:boundary], data[boundary:]
+
+
 def _validate_json(data: bytes, relative_path: str) -> None:
     if not relative_path.lower().endswith(".json"):
         return
@@ -3504,17 +3523,34 @@ def _prepare_writes(
         if mode in {"append", "prepend"}:
             # current_hash is not None here, so the base was read for the backup.
             assert original_content is not None
-            content = (
-                original_content + content
-                if mode == "append"
-                else content + original_content
-            )
+            if mode == "append":
+                content = original_content + content
+            else:
+                # A Markdown document's frontmatter is its header, not the top
+                # of its content: prepending above it would demote the block to
+                # a horizontal rule and silently discard every property. Insert
+                # after the header instead, so "prepend" means the top of the
+                # body for exactly the documents that have one.
+                header, body = _split_markdown_frontmatter(
+                    original_content, normalized
+                )
+                content = header + content + body
             content_hash = sha256_bytes(content)
             total_content_bytes += len(original_content)
             if total_content_bytes > MAX_TRANSACTION_TOTAL_BYTES:
                 raise TransactionValidationError(
                     "TRANSACTION_TOTAL_TOO_LARGE",
                     f"transaction content exceeds {MAX_TRANSACTION_TOTAL_BYTES} bytes",
+                )
+            if len(content) > MAX_TRANSACTION_FILE_BYTES:
+                # Without this the composed file could exceed the per-file cap
+                # that every later _safe_file_state honours, wedging the path
+                # out of the engine — including the replace that would shrink
+                # it back.
+                raise TransactionValidationError(
+                    "TRANSACTION_FILE_TOO_LARGE",
+                    f"{normalized} would be {len(content)} bytes, above the "
+                    f"{MAX_TRANSACTION_FILE_BYTES}-byte per-file limit",
                 )
             # The composed document is what lands on disk, so it is what the
             # document validators must judge — a fragment is not a document.

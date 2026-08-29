@@ -2639,6 +2639,62 @@ def test_append_rolls_back_to_the_original_bytes() -> None:
         assert journal["state"] == "rolled-back"
 
 
+def test_prepend_inserts_below_frontmatter_and_preserves_it() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        vault = make_vault(Path(td) / "vault")
+        target = vault / "wiki/log.md"
+        header = "---\ntype: meta\ntitle: Wiki Log\n---\n"
+        target.write_text(header + "\n## 2026-08-28\n- older\n", encoding="utf-8")
+        apply_bundle(
+            vault,
+            bundle(
+                "prepend-below-frontmatter",
+                [
+                    {
+                        "path": "wiki/log.md",
+                        "mode": "prepend",
+                        "content": "\n## 2026-08-29\n- newest\n",
+                    }
+                ],
+                {"wiki/log.md": sha256_file(target)},
+            ),
+        )
+        text = target.read_text(encoding="utf-8")
+        assert text == header + "\n## 2026-08-29\n- newest\n\n## 2026-08-28\n- older\n"
+        # The properties block must survive as frontmatter, not become a rule.
+        assert text.startswith("---\ntype: meta\n")
+        assert text.count("---\n") == 2
+
+
+def test_prepend_is_literal_without_frontmatter_and_for_non_markdown() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        vault = make_vault(Path(td) / "vault")
+        plain = vault / "wiki/plain.md"
+        plain.write_text("body\n", encoding="utf-8")
+        apply_bundle(
+            vault,
+            bundle(
+                "prepend-plain",
+                [{"path": "wiki/plain.md", "mode": "prepend", "content": "top\n"}],
+                {"wiki/plain.md": sha256_file(plain)},
+            ),
+        )
+        assert plain.read_text(encoding="utf-8") == "top\nbody\n"
+
+        # An unterminated block is not frontmatter, so it is not a header.
+        partial = vault / "wiki/partial.md"
+        partial.write_text("---\nstray\n", encoding="utf-8")
+        apply_bundle(
+            vault,
+            bundle(
+                "prepend-partial",
+                [{"path": "wiki/partial.md", "mode": "prepend", "content": "x\n---\n"}],
+                {"wiki/partial.md": sha256_file(partial)},
+            ),
+        )
+        assert partial.read_text(encoding="utf-8") == "x\n---\n---\nstray\n"
+
+
 def test_append_declared_hash_describes_the_authored_fragment() -> None:
     with tempfile.TemporaryDirectory() as td:
         vault = make_vault(Path(td) / "vault")
@@ -2847,6 +2903,8 @@ def main() -> None:
     test_append_requires_an_existing_target()
     test_append_rejects_a_stale_base_exactly_as_replace_does()
     test_append_rolls_back_to_the_original_bytes()
+    test_prepend_inserts_below_frontmatter_and_preserves_it()
+    test_prepend_is_literal_without_frontmatter_and_for_non_markdown()
     test_append_declared_hash_describes_the_authored_fragment()
     test_append_validates_the_composed_document_not_the_fragment()
     test_each_write_path_is_alias_audited_once_per_prepare()

@@ -77,12 +77,19 @@ Record SHA-256 preconditions for every target. Use `create` for a new note and
 
 Do not re-emit a growing document to add to it. `wiki/log.md` takes the new
 entry as a `prepend` whose content is just that entry, so a save costs
-authoring a paragraph rather than the whole log; an index or MOC that only
-gains a line takes an `append` of that line. Reserve `replace` for documents
-you are genuinely rewriting — `wiki/hot.md` is one, because keeping it under
-500 words means re-curating it rather than growing it. Composition happens
-inside the engine under the same SHA-256 precondition, so a stale base is
-rejected rather than silently duplicated.
+authoring a paragraph rather than the whole log. When the page opens with
+frontmatter the engine inserts below it, so the properties block survives and
+the entry still lands at the top of the body.
+
+`append` concatenates at end-of-file, so it fits a flat list only. An index or
+MOC with `##` sections is not flat: appending a line puts it under whichever
+section happens to be last, not under its own heading. Use `replace` for a
+sectioned index, and reserve `replace` generally for documents you are
+genuinely rewriting — `wiki/hot.md` is one, because keeping it under 500 words
+means re-curating it rather than growing it.
+
+Composition happens inside the engine under the same SHA-256 precondition, so
+a stale base is rejected rather than silently duplicated.
 
 Parallel agents may inspect and draft but
 must not mutate the vault. The orchestrator creates one

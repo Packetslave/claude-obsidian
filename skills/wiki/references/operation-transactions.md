@@ -82,9 +82,17 @@ describes the authored fragment, exactly as it describes the authored bytes for
 the other modes, while the journal and result hashes describe the composed
 file that lands on disk.
 
-Prefer `append`/`prepend` for growing documents — a log entry or a line added
-to a hot list costs authoring a paragraph instead of re-emitting the whole
-file. Safety is unchanged: a stale base fails with `EXPECTED_HASH_MISMATCH`
+`prepend` onto a Markdown document whose base opens with a terminated
+frontmatter block inserts **below** that block. The block is the document's
+header, not the top of its content, and prepending above it would demote it to
+a horizontal rule and silently discard every property. Everywhere else —
+non-Markdown targets, and Markdown without frontmatter — `prepend` is literal.
+
+Prefer `append`/`prepend` for growing documents — a log entry costs authoring a
+paragraph instead of re-emitting the whole file. Note that `append`
+concatenates at end-of-file, so on a document with `##` sections the new line
+lands under the last section rather than a chosen one; sectioned indexes want
+`replace`. Safety is unchanged: a stale base fails with `EXPECTED_HASH_MISMATCH`
 just as `replace` does, a missing target fails with `APPEND_TARGET_MISSING` or
 `PREPEND_TARGET_MISSING`, the Markdown and JSON validators judge the **composed**
 document, and rollback restores the original bytes from the same backup. JSON
