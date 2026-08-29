@@ -2746,6 +2746,49 @@ def test_a_write_path_aliased_on_disk_is_still_rejected() -> None:
             raise AssertionError("a case-aliased write path must be rejected")
 
 
+def test_transactions_record_per_phase_durations() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        vault = make_vault(Path(td) / "vault")
+        operation = bundle(
+            "timed",
+            [{"path": "wiki/A.md", "mode": "create", "content": "# A\n"}],
+        )
+
+        plan = inspect_bundle(vault, operation, collect_timings=True)
+        assert set(plan["durations_ms"]) == {"prepare", "total"}
+        assert all(
+            isinstance(value, float) and value >= 0.0
+            for value in plan["durations_ms"].values()
+        ), plan["durations_ms"]
+
+        result = apply_bundle(vault, operation, collect_timings=True)
+        assert set(result["durations_ms"]) == {"prepare", "apply", "total"}
+
+        journal = json.loads(
+            (vault / ".vault-meta/transactions/timed/journal.json").read_text()
+        )
+        assert journal["state"] == "complete"
+        assert set(journal["durations_ms"]) == {"prepare", "apply", "total"}
+
+
+def test_timings_stay_out_of_the_persisted_result_by_default() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        vault = make_vault(Path(td) / "vault")
+        operation = bundle(
+            "untimed",
+            [{"path": "wiki/A.md", "mode": "create", "content": "# A\n"}],
+        )
+        result = apply_bundle(vault, operation)
+        assert "durations_ms" not in result
+        stored = json.loads(
+            (vault / ".vault-meta/transactions/untimed/changed-paths.json").read_text()
+        )
+        assert "durations_ms" not in stored
+        # The replayed result must stay byte-identical to the first one, which
+        # is why timings are opt-in on the return value rather than baked in.
+        assert apply_bundle(vault, operation) == result
+
+
 def main() -> None:
     multiprocessing.set_start_method("fork" if os.name != "nt" else "spawn", force=True)
     test_apply_and_idempotent_result()
@@ -2808,6 +2851,8 @@ def main() -> None:
     test_append_validates_the_composed_document_not_the_fragment()
     test_each_write_path_is_alias_audited_once_per_prepare()
     test_a_write_path_aliased_on_disk_is_still_rejected()
+    test_transactions_record_per_phase_durations()
+    test_timings_stay_out_of_the_persisted_result_by_default()
     print("All transaction tests passed.")
 
 

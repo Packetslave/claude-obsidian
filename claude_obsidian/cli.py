@@ -143,6 +143,14 @@ def _add_approval_argument(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_timings_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--timings",
+        action="store_true",
+        help="Report per-phase durations in milliseconds alongside the result",
+    )
+
+
 def _selection(
     args: argparse.Namespace, *, allow_uninitialized: bool = False
 ) -> VaultSelection:
@@ -201,6 +209,7 @@ def command_transaction_apply(args: argparse.Namespace) -> int:
         timeout=args.timeout,
         stale_after=args.stale_after,
         approved_plan_sha256=args.approved_plan_sha256,
+        collect_timings=bool(getattr(args, "timings", False)),
     )
     _emit(result)
     return 0
@@ -227,7 +236,13 @@ def command_transaction_recover(args: argparse.Namespace) -> int:
 
 def command_transaction_inspect(args: argparse.Namespace) -> int:
     selection = _selection(args)
-    _emit(inspect_bundle(selection.root, args.bundle))
+    _emit(
+        inspect_bundle(
+            selection.root,
+            args.bundle,
+            collect_timings=bool(getattr(args, "timings", False)),
+        )
+    )
     return 0
 
 
@@ -964,6 +979,7 @@ def build_parser() -> argparse.ArgumentParser:
     apply_command.add_argument("--timeout", type=float, default=10.0)
     apply_command.add_argument("--stale-after", type=float, default=3600.0)
     _add_approval_argument(apply_command)
+    _add_timings_argument(apply_command)
     apply_command.set_defaults(handler=command_transaction_apply)
 
     recover = transaction_commands.add_parser(
@@ -986,6 +1002,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_vault_argument(inspect)
     inspect.add_argument("bundle", type=Path)
+    _add_timings_argument(inspect)
     inspect.set_defaults(handler=command_transaction_inspect)
 
     hook = subcommands.add_parser("hook", help="Host lifecycle adapter")

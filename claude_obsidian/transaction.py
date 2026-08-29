@@ -1026,6 +1026,12 @@ def _canonical_json_hash(value: Any) -> str:
     return bundle_sha256(value)
 
 
+def _elapsed_ms(started: float) -> float:
+    """Wall-clock milliseconds since a perf_counter reading, for instruments."""
+
+    return round((time.perf_counter() - started) * 1000, 3)
+
+
 def _prepared_projection(writes: Iterable[PreparedWrite]) -> list[dict[str, Any]]:
     return [
         {
@@ -4309,9 +4315,13 @@ def recover_incomplete(
 def inspect_bundle(
     vault_root: Path | str,
     bundle_or_path: Mapping[str, Any] | Path | str,
+    *,
+    collect_timings: bool = False,
 ) -> dict[str, Any]:
     """Validate and summarize a bundle without mutating the vault."""
 
+    started = time.perf_counter()
+    prepare_ms = 0.0
     vault = canonical(vault_root)
     if vault.exists() and not vault.is_dir():
         raise TransactionValidationError(
@@ -4348,6 +4358,7 @@ def inspect_bundle(
         with tempfile.TemporaryDirectory(
             prefix="claude-obsidian-inspect-"
         ) as directory:
+            prepare_started = time.perf_counter()
             prepared = _prepare_writes(
                 vault,
                 expanded,
@@ -4355,6 +4366,7 @@ def inspect_bundle(
                 Path(directory),
                 root_fd=root_fd,
             )
+            prepare_ms = _elapsed_ms(prepare_started)
         recheck_identity = root_fd is not None or not _supports_confined_dirfd()
         if recheck_identity and _vault_object_identity(vault) != vault_identity:
             raise TransactionValidationError(
@@ -4364,7 +4376,7 @@ def inspect_bundle(
         if root_fd is not None:
             os.close(root_fd)
     expanded_hash = _canonical_json_hash(expanded)
-    return {
+    plan = {
         "schema": "claude-obsidian.transaction-plan.v1",
         "operation_id": operation_id,
         "operation_type": operation_type,
@@ -4379,6 +4391,9 @@ def inspect_bundle(
             vault, expanded, prepared, vault_identity=vault_identity
         ),
     }
+    if collect_timings:
+        plan["durations_ms"] = {"prepare": prepare_ms, "total": _elapsed_ms(started)}
+    return plan
 
 
 def apply_bundle(
@@ -4392,7 +4407,9 @@ def apply_bundle(
     approved_plan_sha256: str | None = None,
     reviewed_vault_identity: Mapping[str, Any] | None = None,
     expected_current_vault_identity: Mapping[str, Any] | None = None,
+    collect_timings: bool = False,
 ) -> dict[str, Any]:
+    started = time.perf_counter()
     _require_write_platform()
     vault = canonical(vault_root)
     if not vault.is_dir():
@@ -4571,6 +4588,7 @@ def apply_bundle(
                         "CORRUPT_RUNTIME_STATE", "cannot create transaction backups"
                     )
                 try:
+                    prepare_started = time.perf_counter()
                     prepared = _prepare_writes(
                         vault,
                         bundle,
@@ -4580,6 +4598,7 @@ def apply_bundle(
                         root_fd=runtime.root_fd,
                         meta_fd=runtime.meta_fd,
                     )
+                    prepare_ms = _elapsed_ms(prepare_started)
                     _assert_transaction_namespaces(mutation_lock, runtime, operation)
                     approval_hash = plan_approval_sha256(
                         vault,
@@ -4621,11 +4640,13 @@ def apply_bundle(
                     runtime.remove_operation(operation)
                     raise
 
+                journal["durations_ms"] = {"prepare": prepare_ms}
                 operation.write_json("journal.json", journal)
                 journal["state"] = "applying"
                 operation.write_json("journal.json", journal)
                 _assert_transaction_namespaces(mutation_lock, runtime, operation)
 
+                apply_started = time.perf_counter()
                 try:
                     for index, write in enumerate(prepared, start=1):
                         _assert_transaction_namespaces(
@@ -4711,6 +4732,18 @@ def apply_bundle(
                 operation.write_json("changed-paths.json", result)
                 journal["state"] = "complete"
                 journal["completed_epoch"] = time.time()
+                durations = {
+                    "prepare": prepare_ms,
+                    "apply": _elapsed_ms(apply_started),
+                    "total": _elapsed_ms(started),
+                }
+                journal["durations_ms"] = durations
                 operation.write_json("journal.json", journal)
                 _assert_transaction_namespaces(mutation_lock, runtime, operation)
+                # Deliberately not part of the persisted result: a replayed
+                # operation returns the stored document verbatim, so baking in
+                # a fresh measurement would make an idempotent apply differ
+                # from its first run.
+                if collect_timings:
+                    return {**result, "durations_ms": durations}
                 return result
