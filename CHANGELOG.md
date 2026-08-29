@@ -5,6 +5,64 @@ Notable changes to claude-obsidian are recorded here using
 [Semantic Versioning](https://semver.org/). Git history retains the detailed
 implementation record for older releases.
 
+## [2.2.0] - 2026-08-29
+
+Append and prepend write modes, cheaper transactions, and per-phase timing
+instrumentation.
+
+### Added
+
+- **`append` and `prepend` bundle write modes**, alongside `create` and
+  `replace`. The write's content is a *fragment*: the engine reads the current
+  bytes under the write's existing `expected_hashes` precondition and composes
+  `base + fragment` or `fragment + base`. Adding an entry to a growing document
+  no longer costs re-emitting the whole file. A stale base fails with
+  `EXPECTED_HASH_MISMATCH` exactly as `replace` does, a missing target fails
+  with `APPEND_TARGET_MISSING` / `PREPEND_TARGET_MISSING`, the Markdown and JSON
+  validators judge the composed document, and rollback restores the original
+  bytes from the same backup. `prepend` onto a Markdown document whose base
+  opens with a terminated frontmatter block inserts *below* the block, because
+  frontmatter is the document's header rather than the top of its content;
+  prepending above it would demote it to a horizontal rule and discard every
+  property.
+- **Per-phase timing instrumentation.** `inspect_bundle` and `apply_bundle`
+  measure prepare, apply, and total durations. Timings are always written to the
+  transaction journal and surfaced on the return value when the caller asks with
+  `collect_timings=True`, exposed as `--timings` on `transaction inspect` and
+  `transaction apply`. Opt-in on the return value keeps an idempotent replay
+  byte-identical to its first run.
+
+### Changed
+
+- **Lint no longer walks the raw-capture archive or the ingest inbox.** `.raw/`
+  and `inbox/` are excluded from the file walk at the vault root only, so lint
+  time scales with the wiki rather than with archived source payloads. A nested
+  directory that happens to be named `inbox`, or a `wiki/.raw/`, is ordinary
+  content and stays linted. Note this narrows the wikilink resolver's candidate
+  set: a wiki page that links *into* the raw archive now reports a dead link.
+  That is the intended reading — an archived payload is a source, not a link
+  target — but it is a behaviour change, not a pure optimization.
+- The Save skill documents reusing `hot.md`/`index.md` context within a single
+  session rather than re-reading it per save, with the retry path for a
+  precondition failure spelled out. The relevant-page read budget is unchanged.
+
+### Fixed
+
+- **A `--apply` CLI run prepared the write plan four times; now twice.** One
+  pass was computed unconditionally and discarded on the apply branch, and a
+  second re-derived the approval hash that `apply_bundle` already re-derives
+  before taking the mutation lock. The pre-mutation rejection guarantee is
+  unaffected: `apply_bundle`'s pre-lock check raises the same `PLAN_CHANGED`
+  before any vault state is created. Two passes remain and are both
+  load-bearing — the pre-lock gate and the authoritative in-lock preparation.
+- Each write path is alias-audited once per prepare instead of twice. The
+  `expected_hashes` and `writes` loops cover a provably identical path set, and
+  the audit reads filesystem state that cannot change between them.
+- A composed `append`/`prepend` result is checked against the per-file byte cap.
+  Previously only the authored fragment was measured, so a composition could
+  exceed `MAX_TRANSACTION_FILE_BYTES` and wedge the path out of the engine for
+  every later transaction, including the `replace` that would have shrunk it.
+
 ## [2.1.1] - 2026-08-24
 
 Gitignore-aware lint link resolution, and Windows/WSL troubleshooting
