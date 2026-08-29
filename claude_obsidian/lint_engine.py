@@ -70,6 +70,10 @@ _IGNORED_WALK_DIRS = {
     "__pycache__",
     "node_modules",
 }
+_IGNORED_ROOT_DIRS = {
+    ".raw",
+    "inbox",
+}
 _ORPHAN_EXCLUDED_NAMES = {
     "_index.md",
     "index.md",
@@ -381,12 +385,17 @@ def _walk_files(root: Path) -> list[Path]:
     files: list[Path] = []
     for current, dirnames, filenames in os.walk(root, followlinks=False):
         current_path = Path(current)
+        ignored = _IGNORED_WALK_DIRS
+        if current_path == root:
+            # Archived payloads and staged sources are provenance, not wiki
+            # content: lint time should scale with the wiki. Root-only, so a
+            # page directory that happens to be called "inbox" is unaffected.
+            ignored = ignored | _IGNORED_ROOT_DIRS
         dirnames[:] = sorted(
             (
                 name
                 for name in dirnames
-                if name not in _IGNORED_WALK_DIRS
-                and not (current_path / name).is_symlink()
+                if name not in ignored and not (current_path / name).is_symlink()
             ),
             key=lambda value: (value.casefold(), value),
         )

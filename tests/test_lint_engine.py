@@ -808,5 +808,45 @@ class GitignoreDisambiguationTests(unittest.TestCase):
         self.assertEqual([], report["stale_index_entries"])
 
 
+class RawArchiveExclusionTests(unittest.TestCase):
+    """Lint scales with the wiki, not with archived source payloads."""
+
+    def _walk(self, files: dict[str, str]) -> list[str]:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".obsidian").mkdir()
+            for relative, content in files.items():
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+            return [
+                path.relative_to(root).as_posix()
+                for path in lint_engine._walk_files(root)
+            ]
+
+    def test_raw_archive_and_ingest_inbox_are_not_walked(self) -> None:
+        walked = self._walk(
+            {
+                "wiki/Note.md": "# Note\n",
+                ".raw/captured/payload.md": "archived source\n",
+                ".raw/.manifest.json": "{}\n",
+                "inbox/staged.md": "staged source\n",
+            }
+        )
+        self.assertEqual(["wiki/Note.md"], walked)
+
+    def test_exclusion_is_root_only(self) -> None:
+        # A wiki page directory named "inbox" is ordinary content.
+        walked = self._walk(
+            {
+                "wiki/projects/inbox/Triage.md": "# Triage\n",
+                "wiki/.raw/Note.md": "# Nested\n",
+            }
+        )
+        self.assertEqual(
+            ["wiki/.raw/Note.md", "wiki/projects/inbox/Triage.md"], sorted(walked)
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
