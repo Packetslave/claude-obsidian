@@ -2700,6 +2700,52 @@ def test_append_validates_the_composed_document_not_the_fragment() -> None:
         assert broken.read_text(encoding="utf-8") == "body\n"
 
 
+def test_each_write_path_is_alias_audited_once_per_prepare() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        vault = make_vault(Path(td) / "vault")
+        (vault / "wiki/A.md").write_text("old\n", encoding="utf-8")
+        operation = bundle(
+            "alias-audit-count",
+            [
+                {"path": "wiki/A.md", "mode": "replace", "content": "new\n"},
+                {"path": "wiki/B.md", "mode": "create", "content": "# B\n"},
+            ],
+            {"wiki/A.md": sha256_file(vault / "wiki/A.md")},
+        )
+        audited: list[str] = []
+        real = transaction_module._assert_no_existing_portable_alias
+
+        def counting(vault_root, relative, **keyword):
+            audited.append(relative)
+            return real(vault_root, relative, **keyword)
+
+        original = transaction_module._assert_no_existing_portable_alias
+        transaction_module._assert_no_existing_portable_alias = counting
+        try:
+            inspect_bundle(vault, operation)
+        finally:
+            transaction_module._assert_no_existing_portable_alias = original
+        assert sorted(audited) == ["wiki/A.md", "wiki/B.md"], audited
+
+
+def test_a_write_path_aliased_on_disk_is_still_rejected() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        vault = make_vault(Path(td) / "vault")
+        (vault / "wiki/A.md").write_text("existing\n", encoding="utf-8")
+        try:
+            inspect_bundle(
+                vault,
+                bundle(
+                    "alias-audit-reject",
+                    [{"path": "wiki/a.md", "mode": "create", "content": "# a\n"}],
+                ),
+            )
+        except TransactionValidationError as exc:
+            assert exc.code in {"CASEFOLD_PATH_ALIAS", "PORTABLE_PATH_ALIAS"}, exc.code
+        else:
+            raise AssertionError("a case-aliased write path must be rejected")
+
+
 def main() -> None:
     multiprocessing.set_start_method("fork" if os.name != "nt" else "spawn", force=True)
     test_apply_and_idempotent_result()
@@ -2760,6 +2806,8 @@ def main() -> None:
     test_append_rolls_back_to_the_original_bytes()
     test_append_declared_hash_describes_the_authored_fragment()
     test_append_validates_the_composed_document_not_the_fragment()
+    test_each_write_path_is_alias_audited_once_per_prepare()
+    test_a_write_path_aliased_on_disk_is_still_rejected()
     print("All transaction tests passed.")
 
 

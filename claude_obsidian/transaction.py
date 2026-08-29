@@ -3296,18 +3296,30 @@ def _prepare_writes(
         )
     normalized_expected: dict[str, str | None] = {}
     expected_casefold: dict[str, str] = {}
+    # Every write requires an expected_hashes entry and every expected entry
+    # must be a write, so the two loops below audit an identical set of paths.
+    # The audit is a directory scan against filesystem state that cannot change
+    # between them, so running it a second time per path only costs a scan.
+    alias_audited: set[str] = set()
+
+    def audit_alias_once(relative: str) -> None:
+        if relative in alias_audited:
+            return
+        _assert_no_existing_portable_alias(
+            vault_root,
+            relative,
+            root_fd=root_fd,
+            meta_fd=meta_fd,
+        )
+        alias_audited.add(relative)
+
     for raw_path, digest in expected.items():
         normalized_path = (
             _normalize_vault_path(raw_path)
             if root_fd is not None
             else _safe_vault_path(vault_root, raw_path)[0]
         )
-        _assert_no_existing_portable_alias(
-            vault_root,
-            normalized_path,
-            root_fd=root_fd,
-            meta_fd=meta_fd,
-        )
+        audit_alias_once(normalized_path)
         folded_path = _portable_name_key(normalized_path)
         prior_expected = expected_casefold.get(folded_path)
         if prior_expected is not None and prior_expected != normalized_path:
@@ -3356,12 +3368,7 @@ def _prepare_writes(
         else:
             normalized = _normalize_vault_path(relative)
             target = vault_root.joinpath(*PurePosixPath(normalized).parts)
-        _assert_no_existing_portable_alias(
-            vault_root,
-            normalized,
-            root_fd=root_fd,
-            meta_fd=meta_fd,
-        )
+        audit_alias_once(normalized)
         if normalized in seen:
             raise TransactionValidationError(
                 "DUPLICATE_WRITE", f"duplicate write path: {normalized}"
