@@ -5,6 +5,32 @@ Notable changes to claude-obsidian are recorded here using
 [Semantic Versioning](https://semver.org/). Git history retains the detailed
 implementation record for older releases.
 
+## [2.2.1] - 2026-08-29
+
+Forward compatibility for the journal, so older engines keep working in a
+vault a newer one has written to.
+
+### Fixed
+
+- **An engine older than 2.2.0 could not write to a vault where 2.2.0 had
+  performed an `append` or `prepend`.** The journal recorded the declared mode,
+  which older recovery readers reject as `CORRUPT_JOURNAL`; because
+  `apply_bundle` runs recovery before every apply, this blocked *any* write
+  from the older engine, not just an explicit recovery. The block was permanent
+  rather than transient, since the journal that triggers it belongs to a
+  completed operation and those persist. This matters in practice because
+  plugin cache paths are version-keyed, so engine versions coexist by design
+  and long-running sessions share one vault.
+
+  The journal now records the *effective* mode. A composed write applies,
+  journals, backs up and rolls back exactly as a `replace` does — the target
+  must already exist, the whole composed file is written, and the recovery
+  record has never carried a mode — so `replace` is an accurate description of
+  what recovery would perform. The declared mode remains available in the
+  operation's stored bundle beside the journal, and the journal's hashes still
+  describe the composed bytes. The recovery reader continues to accept `append`
+  and `prepend` so journals written by 2.2.0 stay recoverable.
+
 ## [2.2.0] - 2026-08-29
 
 Append and prepend write modes, cheaper transactions, and per-phase timing
