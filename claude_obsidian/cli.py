@@ -70,9 +70,15 @@ def _emit(value: Any, *, pretty: bool = True) -> None:
 
 
 def _approval_fields(
-    vault_root: Path, operation: dict[str, Any], generated_at: str
+    vault_root: Path,
+    operation: dict[str, Any],
+    generated_at: str,
+    *,
+    plan: dict[str, Any] | None = None,
 ) -> dict[str, str]:
-    approval_hash = str(inspect_bundle(vault_root, operation)["approval_sha256"])
+    if plan is None:
+        plan = inspect_bundle(vault_root, operation)
+    approval_hash = str(plan["approval_sha256"])
     return {
         "approved_plan_sha256": approval_hash,
         "generated_at": generated_at,
@@ -102,10 +108,27 @@ def _require_approved_plan(
     return plan
 
 
-def _require_approved_operation(
-    args: argparse.Namespace, vault_root: Path, operation: dict[str, Any]
-) -> str:
-    return str(_require_approved_plan(args, vault_root, operation)["approval_sha256"])
+def _require_approved_operation(args: argparse.Namespace) -> str:
+    """Return the reviewed approval hash without re-deriving the plan.
+
+    apply_bundle re-prepares the plan and compares this hash *before* it takes
+    the mutation lock, so a stale approval is still rejected without any vault
+    state being created. Preparing the plan here as well only to compare the
+    same hash a second time doubles the cost of every apply.
+
+    _require_approved_plan remains for callers that need the reviewed plan
+    itself — Init reads its vault_identity, and passing that identity to
+    apply_bundle suppresses the engine's own pre-lock check, so there the CLI
+    is genuinely the only gate.
+    """
+
+    supplied = getattr(args, "approved_plan_sha256", None)
+    if not supplied:
+        raise TransactionValidationError(
+            "PLAN_APPROVAL_REQUIRED",
+            "--apply requires --approved-plan-sha256 from the reviewed dry-run",
+        )
+    return str(supplied)
 
 
 def _add_vault_argument(parser: argparse.ArgumentParser) -> None:
@@ -409,7 +432,7 @@ def command_capture_apply(args: argparse.Namespace) -> int:
         _emit(payload)
         return 0
     if writes:
-        approval = _require_approved_operation(args, root, operation)
+        approval = _require_approved_operation(args)
         transaction_result = apply_bundle(
             root, operation, approved_plan_sha256=approval
         )
@@ -645,8 +668,8 @@ def command_mode_set(args: argparse.Namespace) -> int:
         "address_requests": [],
         "source_manifest_updates": {},
     }
-    plan = inspect_bundle(root, operation)
     if not args.apply:
+        plan = inspect_bundle(root, operation)
         _emit(
             {
                 "schema": "claude-obsidian.mode-plan.v1",
@@ -654,11 +677,11 @@ def command_mode_set(args: argparse.Namespace) -> int:
                 "mode": args.mode,
                 "plan": plan,
                 "operation": operation,
-                **_approval_fields(root, operation, timestamp),
+                **_approval_fields(root, operation, timestamp, plan=plan),
             }
         )
         return 0
-    approval = _require_approved_operation(args, root, operation)
+    approval = _require_approved_operation(args)
     _emit(apply_bundle(root, operation, approved_plan_sha256=approval))
     return 0
 
@@ -693,8 +716,8 @@ def command_extension_dragonscale(args: argparse.Namespace) -> int:
             }
         )
         return 0
-    plan = inspect_bundle(root, operation)
     if not args.apply:
+        plan = inspect_bundle(root, operation)
         _emit(
             {
                 "schema": "claude-obsidian.extension-plan.v1",
@@ -702,11 +725,11 @@ def command_extension_dragonscale(args: argparse.Namespace) -> int:
                 "status": "dry-run",
                 "plan": plan,
                 "operation": operation,
-                **_approval_fields(root, operation, timestamp),
+                **_approval_fields(root, operation, timestamp, plan=plan),
             }
         )
         return 0
-    approval = _require_approved_operation(args, root, operation)
+    approval = _require_approved_operation(args)
     _emit(apply_bundle(root, operation, approved_plan_sha256=approval))
     return 0
 
@@ -758,7 +781,7 @@ def command_migrate(args: argparse.Namespace) -> int:
             }
         )
         return 0
-    approval = _require_approved_operation(args, selection.root, operation)
+    approval = _require_approved_operation(args)
     result = apply_bundle(selection.root, operation, approved_plan_sha256=approval)
     _emit(result)
     return 0
@@ -896,7 +919,7 @@ def command_adopt(args: argparse.Namespace) -> int:
             }
         )
         return 0
-    approval = _require_approved_operation(args, destination, operation)
+    approval = _require_approved_operation(args)
     result = apply_bundle(destination, operation, approved_plan_sha256=approval)
     _emit(result)
     return 0

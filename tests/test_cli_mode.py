@@ -3,16 +3,26 @@
 
 from __future__ import annotations
 
+import argparse
+import contextlib
+import io
 import json
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
 CLI = ROOT / "scripts/claude-obsidian.py"
+
+sys.path.insert(0, str(ROOT))
+
+import claude_obsidian.cli as cli_module
+import claude_obsidian.transaction as transaction_module
+from claude_obsidian.transaction import TransactionValidationError
 
 
 class ModeCliTests(unittest.TestCase):
@@ -224,6 +234,91 @@ class ModeCliTests(unittest.TestCase):
                 result = self.invoke(*command)
                 self.assertEqual(2, result.returncode)
                 self.assertIn("duplicate JSON object key", result.stderr)
+
+
+class ModePlanPreparationTests(unittest.TestCase):
+    """The plan is prepared once per CLI pass, never speculatively."""
+
+    def vault(self, parent: Path) -> Path:
+        vault = parent / "vault"
+        (vault / ".obsidian").mkdir(parents=True)
+        (vault / "wiki").mkdir()
+        (vault / ".raw").mkdir()
+        return vault
+
+    def namespace(self, vault: Path, **overrides: object) -> argparse.Namespace:
+        fields: dict[str, object] = {
+            "vault": str(vault),
+            "mode": "para",
+            "generated_at": "2026-07-11T12:00:00Z",
+            "operation_id": "mode-prepare-count",
+            "apply": False,
+            "approved_plan_sha256": None,
+        }
+        fields.update(overrides)
+        return argparse.Namespace(**fields)
+
+    def run_counting_preparations(self, args: argparse.Namespace) -> int:
+        """Run the command, returning how many times a plan was prepared."""
+
+        calls = 0
+        real = transaction_module._prepare_writes
+
+        def counting(*positional: object, **keyword: object) -> object:
+            nonlocal calls
+            calls += 1
+            return real(*positional, **keyword)
+
+        with mock.patch.object(transaction_module, "_prepare_writes", counting):
+            with contextlib.redirect_stdout(io.StringIO()):
+                cli_module.command_mode_set(args)
+        return calls
+
+    def test_dry_run_prepares_the_plan_exactly_once(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            vault = self.vault(Path(directory))
+            calls = self.run_counting_preparations(self.namespace(vault))
+            self.assertEqual(1, calls)
+
+    def test_apply_prepares_the_plan_exactly_twice(self) -> None:
+        # Two preparations are load-bearing and must not be collapsed further:
+        # the CLI rejects a stale plan *before* any vault state is created, and
+        # apply_bundle re-derives it under the mutation lock, which is the
+        # authoritative check. Anything beyond those two is waste.
+        with tempfile.TemporaryDirectory() as directory:
+            vault = self.vault(Path(directory))
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                cli_module.command_mode_set(self.namespace(vault))
+            approval = json.loads(buffer.getvalue())["approved_plan_sha256"]
+
+            calls = self.run_counting_preparations(
+                self.namespace(vault, apply=True, approved_plan_sha256=approval)
+            )
+            self.assertEqual(2, calls)
+            self.assertEqual(
+                "para", json.loads((vault / ".vault-meta/mode.json").read_text())["mode"]
+            )
+
+    def test_apply_still_rejects_a_stale_plan_before_touching_the_vault(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            vault = self.vault(Path(directory))
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                cli_module.command_mode_set(self.namespace(vault))
+            approval = json.loads(buffer.getvalue())["approved_plan_sha256"]
+
+            stale = self.namespace(
+                vault,
+                apply=True,
+                approved_plan_sha256=approval,
+                operation_id="mode-prepare-count-changed",
+            )
+            with self.assertRaises(TransactionValidationError) as caught:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    cli_module.command_mode_set(stale)
+            self.assertEqual("PLAN_CHANGED", caught.exception.code)
+            self.assertFalse((vault / ".vault-meta/mode.json").exists())
 
 
 if __name__ == "__main__":
