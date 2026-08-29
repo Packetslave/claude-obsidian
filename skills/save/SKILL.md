@@ -36,6 +36,22 @@ test -f "$CORE"
 2. Read `wiki/hot.md`, `wiki/index.md`, the methodology configuration when
    present, and at most five directly relevant pages. Increase the read budget
    only when the user agrees or correctness requires it.
+
+   You may reuse `hot.md`, `index.md` and the methodology configuration from
+   earlier in this same session instead of re-reading them, and should: a
+   session that saves several times otherwise re-reads the vault's largest
+   shared files once per save for no benefit. Reuse is safe because it cannot
+   silently win — every write carries a SHA-256 precondition, so if one of
+   those files changed after you read it, the apply is *rejected* rather than
+   applied over the newer version. On `EXPECTED_HASH_MISMATCH`, re-read the
+   file the error names, rebuild the bundle against its current bytes, and
+   re-inspect before applying again. Never widen the read budget to compensate,
+   and never reuse context across sessions — only within the one you are in.
+
+   The five-page budget for *relevant* pages is unchanged and is not what this
+   is about. Those reads are what makes a save's links correct, and link
+   quality is the product; the meta files are shared scaffolding, and re-reading
+   them is what is wasteful.
 3. Search for an existing note before creating one. Prefer a small update over a
    duplicate. Obtain explicit approval before replacing an existing canonical
    note.
