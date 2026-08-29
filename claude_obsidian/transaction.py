@@ -3701,6 +3701,24 @@ def _validate_provenance_writes(
         raise TransactionValidationError("INVALID_PROVENANCE_LEDGER", detail)
 
 
+def _journal_mode(mode: str) -> str:
+    """The write mode as recovery needs to understand it.
+
+    append and prepend compose in prepare and then apply, journal, back up and
+    roll back exactly as a replace does — the target must already exist, the
+    whole composed file is written, and RecoveryWrite has never carried a mode
+    at all. Recording the effective mode rather than the declared one keeps a
+    journal readable by an engine released before these modes existed, which
+    matters because plugin caches are version-keyed: several engine versions
+    legitimately coexist and long-running sessions share one vault.
+
+    The declared mode is not lost. Every operation stores its bundle next to
+    the journal, and that keeps the author's original intent.
+    """
+
+    return "replace" if mode in {"append", "prepend"} else mode
+
+
 def _journal_for(
     operation_id: str,
     operation_type: str,
@@ -3722,7 +3740,7 @@ def _journal_for(
         "writes": [
             {
                 "path": write.relative_path,
-                "mode": write.mode,
+                "mode": _journal_mode(write.mode),
                 "new_sha256": write.content_sha256,
                 "original_sha256": write.original_sha256,
                 "original_mode": write.original_mode,

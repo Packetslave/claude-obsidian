@@ -2695,6 +2695,70 @@ def test_prepend_is_literal_without_frontmatter_and_for_non_markdown() -> None:
         assert partial.read_text(encoding="utf-8") == "x\n---\n---\nstray\n"
 
 
+def test_journal_records_a_mode_older_engines_can_read() -> None:
+    # A composed write applies and rolls back exactly like a replace, and
+    # RecoveryWrite never carried a mode at all — so the journal records the
+    # *effective* mode. An engine released before append/prepend existed can
+    # then still recover, or write, in a vault a newer engine has touched.
+    # The declared mode is not lost: the operation's stored bundle keeps it.
+    with tempfile.TemporaryDirectory() as td:
+        vault = make_vault(Path(td) / "vault")
+        target = vault / "wiki/log.md"
+        target.write_text("first\n", encoding="utf-8")
+        apply_bundle(
+            vault,
+            bundle(
+                "journal-compat",
+                [{"path": "wiki/log.md", "mode": "append", "content": "second\n"}],
+                {"wiki/log.md": sha256_file(target)},
+            ),
+        )
+        operation = vault / ".vault-meta/transactions/journal-compat"
+        journal = json.loads((operation / "journal.json").read_text())
+        stored = json.loads((operation / "bundle.json").read_text())
+
+        assert journal["writes"][0]["mode"] == "replace", journal["writes"][0]
+        assert stored["writes"][0]["mode"] == "append", stored["writes"][0]
+        assert target.read_text(encoding="utf-8") == "first\nsecond\n"
+
+        # The compatible mode must not weaken the journal: its hashes still
+        # describe the composed bytes that actually landed.
+        assert journal["writes"][0]["new_sha256"] == sha256_file(target)
+
+
+def test_recovery_still_reads_journals_written_before_the_compat_fix() -> None:
+    # 2.2.0 wrote "append" into journals. Those journals exist in the wild, so
+    # the recovery reader keeps accepting them even though nothing emits them.
+    with tempfile.TemporaryDirectory() as td:
+        vault = make_vault(Path(td) / "vault")
+        target = vault / "wiki/log.md"
+        target.write_text("first\n", encoding="utf-8")
+        apply_bundle(
+            vault,
+            bundle(
+                "legacy-journal",
+                [{"path": "wiki/log.md", "mode": "append", "content": "second\n"}],
+                {"wiki/log.md": sha256_file(target)},
+            ),
+        )
+        journal_path = (
+            vault / ".vault-meta/transactions/legacy-journal/journal.json"
+        )
+        journal = json.loads(journal_path.read_text())
+        journal["writes"][0]["mode"] = "append"
+        journal_path.write_text(json.dumps(journal), encoding="utf-8")
+
+        # An ordinary later write runs recovery first; it must not choke.
+        result = apply_bundle(
+            vault,
+            bundle(
+                "after-legacy",
+                [{"path": "wiki/B.md", "mode": "create", "content": "# B\n"}],
+            ),
+        )
+        assert result["status"] == "complete"
+
+
 def test_append_declared_hash_describes_the_authored_fragment() -> None:
     with tempfile.TemporaryDirectory() as td:
         vault = make_vault(Path(td) / "vault")
@@ -2903,6 +2967,8 @@ def main() -> None:
     test_append_requires_an_existing_target()
     test_append_rejects_a_stale_base_exactly_as_replace_does()
     test_append_rolls_back_to_the_original_bytes()
+    test_journal_records_a_mode_older_engines_can_read()
+    test_recovery_still_reads_journals_written_before_the_compat_fix()
     test_prepend_inserts_below_frontmatter_and_preserves_it()
     test_prepend_is_literal_without_frontmatter_and_for_non_markdown()
     test_append_declared_hash_describes_the_authored_fragment()
